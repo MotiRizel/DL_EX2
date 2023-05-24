@@ -22,11 +22,6 @@ class LSTM_Model(nn.Module):
         for param in self.parameters():
             nn.init.uniform_(param, -self.winit, self.winit)
             
-    def state_init(self, batch_size):
-        dev = next(self.parameters()).device
-        states = (torch.zeros(1, batch_size, self.rnn.hidden_size, device = dev), torch.zeros(1, batch_size, self.rnn.hidden_size, device = dev))
-        return states
-    
     def detach(self, hidden_states):
         if type(hidden_states) == tuple:
             hidden_states = (hidden_states[0].detach(), hidden_states[1].detach())

@@ -118,7 +118,7 @@ def train_model(model, train, valid, test, params):
     lr = params.learning_rate
     print("Starting training.\n")
     for epoch in range(params.epochs):
-        states = model.state_init(params.batch_size)
+        states = None
         model.train()
         if epoch > params.epoch_threshold:
             lr = lr / params.factor
@@ -159,7 +159,7 @@ def nll_loss(scores, y):
 def perplexity(data, model, params):
     with torch.no_grad():
         losses = []
-        states = model.state_init(params.batch_size)
+        states = None
         for x, y in data:
             scores, states = model(x, states)
             loss = nll_loss(scores, y)
