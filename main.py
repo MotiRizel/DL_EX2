@@ -127,6 +127,7 @@ def train_model(model, train, valid, test, params):
             model.zero_grad()
             if states is not None:
                 states = model.detach(states)
+            print(sentence.shape, target_sentence.shape)
             scores, states = model(sentence, states)
             loss = nll_loss(scores, target_sentence)
             loss.backward()

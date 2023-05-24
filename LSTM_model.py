@@ -33,7 +33,6 @@ class LSTM_Model(nn.Module):
     def forward(self, x, states):
         x = self.embed(x)
         x = self.dropout(x)
-        x = self.rnn(x, states)
-        scores = self.fc(x)
-        return scores, states
-    
+        x, hidden = self.rnn_cell(x, hidden)
+        x = self.linear(x)
+        return x, hidden
