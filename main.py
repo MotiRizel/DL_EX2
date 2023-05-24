@@ -125,7 +125,8 @@ def train_model(model, train, valid, test, params):
         for batch_number, (sentence, target_sentence) in enumerate(train):
             total_words += sentence.numel()
             model.zero_grad()
-            states = model.detach(states)
+            if states is not None:
+                states = model.detach(states)
             scores, states = model(sentence, states)
             loss = nll_loss(scores, target_sentence)
             loss.backward()
