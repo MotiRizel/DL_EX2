@@ -8,6 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 import itertools
 from pathlib import Path
 from torch.optim.lr_scheduler import StepLR
+from LSTM_model import LSTM_Model
 
 # set device to GPU if available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -19,253 +20,130 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # TODO PARAMETERS TO PLAY WITH - LEARNING RATE, EMBEDDING SIZE, HIDDEN SIZE 
 
-# Chat GPT said thath 300 is a good embedding size
-EMBEDDING_SIZE = 300
-# number of layers in the LSTM - as specified in the paper
-NUM_LAYERS = 2
-# The size of the hidden state of the LSTM - as specified in the paper
-HIDDEN_SIZE = 200
-# Size of the minibatch as specified in the paper
-BATCH_SIZE = 20
+params = lambda: None # create an empty object
+params.lstm_type = 'pytorch' # type of LSTM
+params.layer_num = 2 # number of layers
+params.hidden_size = 200 # hidden size
+params.batch_size = 20 # batch size
+params.learning_rate = 0.8 # learning rate
+params.epochs = 20 # number of epochs
+params.epoch_threshold = 6 # epoch threshold
+params.factor = 1.5 # factor
+params.num_batches = 10000 # number of batches
+params.dropout = 0.5 # dropout probability
+params.seq_length = 35 # sequence length
+params.clip_grad_value = 5 # clip gradient value
+params.winit = 0.05 # weight initialization
 
-# Change the learning rate and perhaps the optimazation method to match 
-LEARNING_RATE = 0.005
-NUM_EPOCHS = 2
-NUM_BATCHES = 10000
-# Dropout From the paper: We apply dropout on non-recurrent connections of the LSTM
-DROPOUT = 0.5
+SAVED_MODELS_DIR = 'saved_models' # directory to save models
 
-# Not sure about this one
-SEQUENCE_LENGTH = 35
-
-# Like in the paper
-CLIP_GRADIENT_VALUE = 5
-
-SAVED_MODELS_DIR = 'saved_models'
-
-LOG_BATCH_INTERVAL = 600
-NUMBER_OF_BATCHES_FOR_LOSS = 1000
 def data_read():
-    with open("./data/ptb.train.txt") as f:
-        file = f.read()
-        train = file[1:].split(' ')
-    with open("./data/ptb.valid.txt") as f:
-        file = f.read()
-        valid = file[1:].split(' ')
-    with open("./data/ptb.test.txt") as f:
-        file = f.read()
-        test = file[1:].split(' ')
-    words = sorted(set(train))
-    vocab_size = len(words)
-    char2ind = {c: i for i, c in enumerate(words)}
-    train = [char2ind[c] for c in train]
-    valid = [char2ind[c] for c in valid]
-    test = [char2ind[c] for c in test]
+    with open("PTB/ptb.train.txt") as f:
+        file = f.read() # read the file
+        train = file[1:].split(' ') # remove the first space and split the file into words
+    with open("PTB/ptb.valid.txt") as f:
+        file = f.read() # read the file
+        valid = file[1:].split(' ') # remove the first space and split the file into words
+    with open("PTB/ptb.test.txt") as f:
+        file = f.read() # read the file
+        test = file[1:].split(' ') # remove the first space and split the file into words
+    words = sorted(set(train)) # get the unique words
+    params.vocab_size = len(words) # get the vocab size
+    char2ind = {c: i for i, c in enumerate(words)} # create a mapping between characters and indices
+    train = [char2ind[c] for c in train] # convert the characters to indices
+    valid = [char2ind[c] for c in valid] # convert the characters to indices
+    test = [char2ind[c] for c in test] # convert the characters to indices
     return np.array(train).reshape(-1, 1), np.array(valid).reshape(-1, 1), np.array(test).reshape(-1, 1), len(words)
-    
 
-def preprocess_data(text_data: str):
-    """ Remove newlines and replace them with <eos> token """
-    # Not sure if I should do this
-    text_data = text_data.lower()
-    text_data = text_data.replace('\r\n', '<eos>')
-    text_data = text_data.replace('\n', '<eos>')
-    return text_data
+def batchify(data, batch_size, seq_length):
+    data = torch.tensor(data, dtype = torch.int64) # convert to tensor
+    num_batches = data.shape[0] // (batch_size) # number of batches
+    data = data[:num_batches * batch_size] # cut off the end so that it divides evenly
+    data = data.view(batch_size, -1) # reshape into batch_size rows
+    datatoplot = data[:5, :seq_length*10] # take a subset for plotting
+    print(datatoplot) # print it out
+    x_y_pairs = [] # initialize the list of x, y pairs
+    for i in range(0, data.shape[1] - seq_length, seq_length): # loop through the data
+        x = data[:, i:i+seq_length].T # get the input
+        y = data[:, i+1:i+seq_length+1].T # get the target
+        x_y_pairs.append((x, y)) # append to the list
+    return x_y_pairs # return the list
 
-def tokenize(text_data: str):
-    """
-    Tokenize the data
-    """
-    return text_data.split()
+def train_model(model, train, valid, test, params):
+    total_words = 0
+    lr = params.learning_rate
+    print("Starting training.\n")
+    for epoch in range(params.epochs):
+        states = model.state_init(params.batch_size)
+        model.train()
+        if epoch > params.epoch_threshold:
+            lr = lr / params.factor
+        for i, (x, y) in enumerate(train):
+            total_words += x.numel()
+            model.zero_grad()
+            states = model.detach(states)
+            scores, states = model(x, states)
+            loss = nll_loss(scores, y)
+            loss.backward()
+            with torch.no_grad():
+                norm = nn.utils.clip_grad_norm_(model.parameters(), params.clip_grad_value)
+                for w_parameters in model.parameters():
+                    w_parameters -= lr * w_parameters.grad
+            if i % (len(train)//10) == 0:
+                print("batch no = {:d} / {:d}, ".format(i, len(train)) +
+                    "train loss = {:.3f}, ".format(loss.item()/params.batch_size) +
+                    "dw.norm() = {:.3f}, ".format(norm) +
+                    "lr = {:.3f}, ".format(lr))
+        model.eval()
+        valid_perp = perplexity(valid, model, params)
+        print("Epoch : {:d} || Validation set perplexity : {:.3f}".format(epoch+1, valid_perp))
+        print("*************************************************\n")
+        test_perp = perplexity(test, model, params)
+        print("Test set perplexity : {:.3f}".format(test_perp))
+    print("Training is over.")
+    return model
 
-def build_vocab(text_data: str):
-    """
-    Build a vocabulary from the data
-    ie: mapping between a word and an index
-    """
-    words = tokenize(text_data)
-    counter = Counter()
-    counter.update(words)
-    #TODO not sure - start from 1, 0 is reserved for padding - when I tried it it failed on some Error
-    print("The total number of words is {}".format(len(words)))
-    print("found {} unique tokens in training data".format(len(counter)))
-    print(f"The 30 most common words are {counter.most_common(30)}")
-    
-    return {word: index for index, word in enumerate(counter.keys())}
+def nll_loss(scores, y):
+    batch_size = y.size(1)
+    expscores = scores.exp()
+    probabilities = expscores / expscores.sum(1, keepdim = True)
+    answerprobs = probabilities[range(len(y.reshape(-1))), y.reshape(-1)]
+    #I multiply by batch_size as in the original paper
+    #Zaremba et al. sum the loss over batches but average these over time.
+    return torch.mean(-torch.log(answerprobs) * batch_size)
 
-class PennTreeBankDataset(torch.utils.data.Dataset):
-    def __init__(self, raw_data: str, vocab: dict, seq_length: int):
-        self.raw_data = raw_data
-        self.vocab = vocab
-        self.encoded_text = self.text_to_vocab(raw_data, vocab)
-        self.seq_length = seq_length
-    
-    def text_to_vocab(self, text: str, vocab: dict):
-        """
-        Convert the data to a vector of indices
-        """
-        return [vocab[word] for word in tokenize(text)]
+def perplexity(data, model, params):
+    with torch.no_grad():
+        losses = []
+        states = model.state_init(params.batch_size)
+        for x, y in data:
+            scores, states = model(x, states)
+            loss = nll_loss(scores, y)
+            #Again with the sum/average implementation described in 'nll_loss'.
+            losses.append(loss.data.item()/params.batch_size)
+    return np.exp(np.mean(losses))
 
-    def __getitem__(self, index):
-        """
-        get the sentence at the index, then shift it by one word to the right to get the target sentence
-        """
-        return torch.tensor(self.encoded_text[index:index+self.seq_length] ,dtype=torch.long, device=device), \
-            torch.tensor(self.encoded_text[index+1:index+self.seq_length+1] ,dtype=torch.long, device=device)
-        
-    def __len__(self):
-        return len(self.encoded_text) - self.seq_length + 1
-
-
-def pad_sentence_and_target(batch: List[Tuple[torch.Tensor, torch.Tensor]]):
-    """
-    get tuples of sentence and target, then pad each of them to the maximum length
-    """
-    
-    sentences = [item[0] for item in batch]
-    target_sentences = [item[1] for item in batch]
-
-    lengths = torch.LongTensor([len(seq) for seq in sentences])
-    # pad sequences
-    padded_sentences = torch.nn.utils.rnn.pad_sequence(sentences, batch_first=True)
-    padded_targets = torch.nn.utils.rnn.pad_sequence(target_sentences, batch_first=True)
-    #TODO should I return this as a tuple? 
-    return padded_sentences, padded_targets, lengths
-
-def create_data_loaders(train_data: str, validation_data: str, test_data: str, batch_size: int, vocab: dict):
-    train_loader = DataLoader(PennTreeBankDataset(train_data, vocab, SEQUENCE_LENGTH), batch_size=batch_size, shuffle=True, collate_fn=pad_sentence_and_target)
-    val_loader = DataLoader(PennTreeBankDataset(validation_data, vocab, SEQUENCE_LENGTH), batch_size=batch_size, shuffle=True, collate_fn=pad_sentence_and_target)
-    test_loader = DataLoader(PennTreeBankDataset(test_data, vocab, SEQUENCE_LENGTH), batch_size=batch_size, shuffle=True, collate_fn=pad_sentence_and_target)
-    return train_loader, val_loader, test_loader
-
-class RnnRegularized(nn.Module):
-    def __init__(self, embedding_size, vocab_size, hidden_size, output_size, num_layers, dropout, batch_size, model):
-        super(RnnRegularized, self).__init__()
-        self.embedding_size = embedding_size
-        self.hidden_size = hidden_size
-        self.output_size = output_size
-        self.num_layers  = num_layers
-        self.dropout = dropout
-        self.batch_size = batch_size
-        self.vocab_size = vocab_size
-        self.embedding = torch.nn.Embedding(vocab_size, embedding_size)
-        if model == "lstm":
-            self.rnn_cell = torch.nn.LSTM(embedding_size, hidden_size, num_layers, dropout=dropout, batch_first=True)
-        elif model == "gru":
-            self.rnn_cell = torch.nn.GRU(embedding_size, hidden_size, num_layers, dropout=dropout, batch_first=True)
-
-        self.linear = torch.nn.Linear(hidden_size, output_size)
-        # Dim should be equal 2 because dim 2 is the words dimension!
-        self.loss_function = nn.CrossEntropyLoss()
-        # Cast the LSTM weights and biases to long data type
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=LEARNING_RATE)
-        self.description = f"{model}_Model_learning_{LEARNING_RATE}_dropout_{dropout}"
-        self.writer = SummaryWriter(self.description)
-        # self.scheduler = StepLR(self.optimizer, step_size=5, gamma=0.1)
-        #TODO consider adding nn.Dropout - maybe the dropout in LSTM is not like the one in the paper
-    
-    def forward(self, input, hidden, lengths):
-        """
-        The input is a long tensor of size (batch_size, seq_len) which contains the indices of the words in the sentence
-        """
-        #TODO init word2vec embedding
-
-        embedding = self.embedding(input)
-        embedding = nn.utils.rnn.pack_padded_sequence(embedding, lengths, batch_first=True, enforce_sorted=False)
-        output, hidden = self.rnn_cell(embedding, hidden)
-        output, output_lengths = nn.utils.rnn.pad_packed_sequence(output, batch_first=True)
-        output = self.linear(output)
-        return output, hidden, output_lengths
-    
-    def calculate_perplexity(self, data_loader: DataLoader) -> float:
-        total_perplexity = 0
-        self.rnn_cell.eval()
-        # Sampling batches to calculate the perplexity faster
-        hidden = None
-        with torch.no_grad():
-            for i, (sentence, target_sentence, lengths) in enumerate(data_loader):
-                word_log_probabilities, hidden , _= self.forward(sentence, hidden, lengths)
-                _, perplexity = self.calculate_perplexity_of_sentence(word_log_probabilities, target_sentence)
-                total_perplexity += perplexity
-                if i == NUMBER_OF_BATCHES_FOR_LOSS:
-                    break
-        self.rnn_cell.train()
-        return total_perplexity / NUMBER_OF_BATCHES_FOR_LOSS
-
-    def calculate_perplexity_of_sentence(self, word_log_probabilities, target_sentence) -> Tuple[Any, float]:
-        
-        word_log_probabilities = word_log_probabilities.transpose(1, 2)
-        
-        loss = self.loss_function(word_log_probabilities, target_sentence)
-        return loss, torch.exp(loss)
-
-    def train(self, train_loader, valid_loader, test_loader, num_epochs):
-        # Epoch iterations
-        prev_perplexity = float("inf")
-        for epoch in range(num_epochs):
-            # Initialize hidden state
-            hidden_states = None
-            # Batch iterations
-            print(f"Starting to Traing Epoch: {epoch} for {len(train_loader)} batches")
-            for batch_number, (sentence, target_sentence, lengths) in enumerate(train_loader):
-                # Added the dimensiton of the word embedding (Which is one in this case)
-                # Transpose so it will contain the correct dimensions for the LSTM
-                # Model unrolling iterations
-                #TODO it should be 35 - validate it
-                
-                # Skip partial batches
-                if sentence.shape[0] != self.batch_size:
-                    continue
-                self.optimizer.zero_grad()
-                word_log_probabilities, hidden_states, output_length = self.forward(sentence, hidden_states, lengths)
-
-                #TODO use pack_padded_sequence to ignore the padding
-
-                # shape: (batch_size, seq_len, vocab_size)
-                # transpose to (batch_size, vocab_size, seq_len)
-                
-                loss, perplexity =  self.calculate_perplexity_of_sentence(word_log_probabilities, target_sentence)
-                if batch_number % LOG_BATCH_INTERVAL == 0:
-                    test_perplexity = self.calculate_perplexity(test_loader)
-                    train_perplexity = self.calculate_perplexity(train_loader)
-                    valid_perplexity = self.calculate_perplexity(valid_loader)
-                    print("<LOGGING> Train perplexity {}, test perplexity {}, valid perplexity {}, batch number {}".format(train_perplexity, test_perplexity, valid_perplexity, batch_number))
-                    self.writer.add_scalars("perplexity", {"train": train_perplexity, "test": test_perplexity}, epoch * len(train_loader) + batch_number)
-                    if test_perplexity < prev_perplexity:
-                        print("Saving model state because test perplexity is lower than previous one")
-                        torch.save(self.state_dict(),  Path(self.description + ".pth"))
-                        prev_perplexity = test_perplexity
-                
-                if batch_number >= NUM_BATCHES:
-                    print("Finished training")
-                    return
-                loss.backward()
-                nn.utils.clip_grad_value_(self.parameters(), clip_value=CLIP_GRADIENT_VALUE)
-                self.optimizer.step()
-
-                # Using the hidden states of the last batch as the intializor
-                # We need to detach the hidden_states so the it wont be traersed by the backward
-                # Difference between GRU and LSTM
-                if type(hidden_states) == tuple:
-                    hidden_states = (hidden_states[0].detach(), hidden_states[1].detach())
-                else:
-                    hidden_states = hidden_states.detach()
-
-            print(f"Epoch {epoch} is done, perplexity on test set is: {test_perplexity}, perplexity on train set is: {train_perplexity}") 
 
 def main():
     # The vocab is built from the training data
     # If a word is missing from the training data, it will be replaced with <unk>
     train, valid, test, vocab_size = data_read()
-    vocab = build_vocab(train_data)
-    train_loader, valid_loader, test_loader = create_data_loaders(train_data, valid_data, test_data, BATCH_SIZE, vocab)
-
-    models = ["gru", "lstm"]
-    dropouts = [0, DROPOUT]
-    for model_name, dropout in itertools.product(models, dropouts):
-        model = RnnRegularized(EMBEDDING_SIZE, len(vocab), HIDDEN_SIZE, len(vocab), NUM_LAYERS, dropout, BATCH_SIZE, model_name).to(device)
-        print(f"Starting to train model {model.description}")
-        model.train(train_loader, valid_loader, test_loader, NUM_EPOCHS)
+    params.vocab_size = vocab_size
+    train_batchwise_x_y_pairs = batchify(train, params.batch_size, params.seq_length)
+    valid_batchwise_x_y_pairs = batchify(valid, params.batch_size, params.seq_length)
+    test_batchwise_x_y_pairs = batchify(test, params.batch_size, params.seq_length)
+    lstm_model = LSTM_Model(params)
+    lstm_model.to(device)
+    lstm_model = train_model(lstm_model,train_batchwise_x_y_pairs, valid_batchwise_x_y_pairs, test_batchwise_x_y_pairs, params)
+    
+    #TODO add perplexity calculation
+    #TODO add tensorboard
+    #TODO add saving the model
+    #TODO add loading the model
+    #TODO add testing the model
+    #TODO add hyperparameter tuning
+    #TODO add dropout
+    #TODO add batch normalization
 
 if __name__ == "__main__":
     main()
