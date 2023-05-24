@@ -117,6 +117,7 @@ def train_model(model, train, valid, test, params):
     total_words = 0
     lr = params.learning_rate
     print("Starting training.\n")
+    loss_function = nn.NLLLoss() 
     for epoch in range(params.epochs):
         states = None
         model.train()
@@ -129,7 +130,7 @@ def train_model(model, train, valid, test, params):
                 states = model.detach(states)
             print(sentence.shape, target_sentence.shape)
             scores, states = model(sentence, states)
-            loss = nll_loss(scores, target_sentence)
+            loss = loss_function(scores, target_sentence)
             loss.backward()
             with torch.no_grad():
                 norm = nn.utils.clip_grad_norm_(model.parameters(), params.clip_grad_value)
@@ -148,15 +149,6 @@ def train_model(model, train, valid, test, params):
         print("Test set perplexity : {:.3f}".format(test_perp))
     print("Training is over.")
     return model
-
-def nll_loss(scores, y):
-    batch_size = y.size(1)
-    expscores = scores.exp()
-    probabilities = expscores / expscores.sum(1, keepdim = True)
-    answerprobs = probabilities[range(len(y.reshape(-1))), y.reshape(-1)]
-    #I multiply by batch_size as in the original paper
-    #Zaremba et al. sum the loss over batches but average these over time.
-    return torch.mean(-torch.log(answerprobs) * batch_size)
 
 def perplexity(data, model, params):
     with torch.no_grad():
