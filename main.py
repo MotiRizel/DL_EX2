@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch
+import numpy as np
 from collections import Counter
 from torch.utils.data import DataLoader
 from typing import List, Tuple, Any
@@ -44,14 +45,24 @@ SAVED_MODELS_DIR = 'saved_models'
 
 LOG_BATCH_INTERVAL = 600
 NUMBER_OF_BATCHES_FOR_LOSS = 1000
-
-def load_data():
-    train_data = open('PTB/ptb.train.txt', 'r').read()
-    valid_data = open('PTB/ptb.valid.txt', 'r').read()
-    test_data = open('PTB/ptb.test.txt', 'r').read()
-    return preprocess_data(train_data), preprocess_data(valid_data), preprocess_data(test_data) 
-
-# define tokenizer and build vocabulary
+def data_read():
+    with open("./data/ptb.train.txt") as f:
+        file = f.read()
+        train = file[1:].split(' ')
+    with open("./data/ptb.valid.txt") as f:
+        file = f.read()
+        valid = file[1:].split(' ')
+    with open("./data/ptb.test.txt") as f:
+        file = f.read()
+        test = file[1:].split(' ')
+    words = sorted(set(train))
+    vocab_size = len(words)
+    char2ind = {c: i for i, c in enumerate(words)}
+    train = [char2ind[c] for c in train]
+    valid = [char2ind[c] for c in valid]
+    test = [char2ind[c] for c in test]
+    return np.array(train).reshape(-1, 1), np.array(valid).reshape(-1, 1), np.array(test).reshape(-1, 1), len(words)
+    
 
 def preprocess_data(text_data: str):
     """ Remove newlines and replace them with <eos> token """
@@ -245,7 +256,7 @@ class RnnRegularized(nn.Module):
 def main():
     # The vocab is built from the training data
     # If a word is missing from the training data, it will be replaced with <unk>
-    train_data, valid_data, test_data = load_data()
+    train, valid, test, vocab_size = data_read()
     vocab = build_vocab(train_data)
     train_loader, valid_loader, test_loader = create_data_loaders(train_data, valid_data, test_data, BATCH_SIZE, vocab)
 
