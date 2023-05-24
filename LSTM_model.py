@@ -27,9 +27,14 @@ class LSTM_Model(nn.Module):
         states = (torch.zeros(1, batch_size, self.rnn.hidden_size, device = dev), torch.zeros(1, batch_size, self.rnn.hidden_size, device = dev))
         return states
     
-    def detach(self, states):
-        return states.detach()
+    def detach(self, hidden_states):
+        if type(hidden_states) == tuple:
+            hidden_states = (hidden_states[0].detach(), hidden_states[1].detach())
+        else:
+            hidden_states = hidden_states.detach()
+        return hidden_states
     
+
     def forward(self, x, states):
         x = self.embed(x)
         x = self.dropout(x)
