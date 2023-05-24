@@ -37,37 +37,81 @@ params.winit = 0.05 # weight initialization
 
 SAVED_MODELS_DIR = 'saved_models' # directory to save models
 
-def data_read():
-    with open("PTB/ptb.train.txt") as f:
-        file = f.read() # read the file
-        train = file[1:].split(' ') # remove the first space and split the file into words
-    with open("PTB/ptb.valid.txt") as f:
-        file = f.read() # read the file
-        valid = file[1:].split(' ') # remove the first space and split the file into words
-    with open("PTB/ptb.test.txt") as f:
-        file = f.read() # read the file
-        test = file[1:].split(' ') # remove the first space and split the file into words
-    words = sorted(set(train)) # get the unique words
-    params.vocab_size = len(words) # get the vocab size
-    char2ind = {c: i for i, c in enumerate(words)} # create a mapping between characters and indices
-    train = [char2ind[c] for c in train] # convert the characters to indices
-    valid = [char2ind[c] for c in valid] # convert the characters to indices
-    test = [char2ind[c] for c in test] # convert the characters to indices
-    return np.array(train).reshape(-1, 1), np.array(valid).reshape(-1, 1), np.array(test).reshape(-1, 1), len(words)
+def load_data():
+    train_data = open('PTB/ptb.train.txt', 'r').read()
+    valid_data = open('PTB/ptb.valid.txt', 'r').read()
+    test_data = open('PTB/ptb.test.txt', 'r').read()
+    return preprocess_data(train_data), preprocess_data(valid_data), preprocess_data(test_data) 
 
-def batchify(data, batch_size, seq_length):
-    data = torch.tensor(data, dtype = torch.int64) # convert to tensor
-    num_batches = data.shape[0] // (batch_size) # number of batches
-    data = data[:num_batches * batch_size] # cut off the end so that it divides evenly
-    data = data.view(batch_size, -1) # reshape into batch_size rows
-    datatoplot = data[:5, :seq_length*10] # take a subset for plotting
-    print(datatoplot) # print it out
-    x_y_pairs = [] # initialize the list of x, y pairs
-    for i in range(0, data.shape[1] - seq_length, seq_length): # loop through the data
-        x = data[:, i:i+seq_length].T # get the input
-        y = data[:, i+1:i+seq_length+1].T # get the target
-        x_y_pairs.append((x, y)) # append to the list
-    return x_y_pairs # return the list
+# define tokenizer and build vocabulary
+
+def preprocess_data(text_data: str):
+    """ Remove newlines and replace them with <eos> token """
+    # Not sure if I should do this
+    text_data = text_data.lower()
+    text_data = text_data.replace('\r\n', '<eos>')
+    text_data = text_data.replace('\n', '<eos>')
+    return text_data
+
+def tokenize(text_data: str):
+    """
+    Tokenize the data
+    """
+    return text_data.split()
+
+def build_vocab(text_data: str):
+    """
+    Build a vocabulary from the data
+    ie: mapping between a word and an index
+    """
+    words = tokenize(text_data)
+    counter = Counter()
+    counter.update(words)
+    #TODO not sure - start from 1, 0 is reserved for padding - when I tried it it failed on some Error
+    print("The total number of words is {}".format(len(words)))
+    print("found {} unique tokens in training data".format(len(counter)))
+    print(f"The 30 most common words are {counter.most_common(30)}")
+    
+    return {word: index for index, word in enumerate(counter.keys())}
+
+class PennTreeBankDataset(torch.utils.data.Dataset):
+    def __init__(self, raw_data: str, vocab: dict, seq_length: int):
+        self.raw_data = raw_data
+        self.vocab = vocab
+        self.encoded_text = self.text_to_vocab(raw_data, vocab)
+        self.seq_length = seq_length
+    
+    def text_to_vocab(self, text: str, vocab: dict):
+        """
+        Convert the data to a vector of indices
+        """
+        return [vocab[word] for word in tokenize(text)]
+
+    def __getitem__(self, index):
+        """
+        get the sentence at the index, then shift it by one word to the right to get the target sentence
+        """
+        return torch.tensor(self.encoded_text[index * self.seq_length:(index + 1) * self.seq_length] ,dtype=torch.long, device=device), \
+            torch.tensor(self.encoded_text[index * self.seq_length + 1:(index + 1) * self.seq_length+1] ,dtype=torch.long, device=device)
+        
+    def __len__(self):
+        return int(len(self.encoded_text) / self.seq_length) - 30
+
+
+def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor]]):
+    
+    sentences = [item[0] for item in batch]
+    target_sentences = [item[1] for item in batch]
+    # transform the list of tensors to a tensor of tensors without using pad_sequence
+    sentences = torch.stack(sentences, dim=0)
+    target_sentences = torch.stack(target_sentences, dim=0)
+    return sentences, target_sentences
+
+def create_data_loaders(train_data: str, validation_data: str, test_data: str, batch_size: int, vocab: dict):
+    train_loader = DataLoader(PennTreeBankDataset(train_data, vocab, params.seq_length), batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(PennTreeBankDataset(validation_data, vocab, params.seq_length), batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    test_loader = DataLoader(PennTreeBankDataset(test_data, vocab, params.seq_length), batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+    return train_loader, val_loader, test_loader
 
 def train_model(model, train, valid, test, params):
     total_words = 0
@@ -78,18 +122,18 @@ def train_model(model, train, valid, test, params):
         model.train()
         if epoch > params.epoch_threshold:
             lr = lr / params.factor
-        for i, (x, y) in enumerate(train):
-            total_words += x.numel()
+        for batch_number, (sentence, target_sentence) in enumerate(train):
+            total_words += sentence.numel()
             model.zero_grad()
             states = model.detach(states)
-            scores, states = model(x, states)
-            loss = nll_loss(scores, y)
+            scores, states = model(sentence, states)
+            loss = nll_loss(scores, target_sentence)
             loss.backward()
             with torch.no_grad():
                 norm = nn.utils.clip_grad_norm_(model.parameters(), params.clip_grad_value)
                 for w_parameters in model.parameters():
                     w_parameters -= lr * w_parameters.grad
-            if i % (len(train)//10) == 0:
+            if batch_number % (len(train)//10) == 0:
                 print("batch no = {:d} / {:d}, ".format(i, len(train)) +
                     "train loss = {:.3f}, ".format(loss.item()/params.batch_size) +
                     "dw.norm() = {:.3f}, ".format(norm) +
@@ -127,14 +171,13 @@ def perplexity(data, model, params):
 def main():
     # The vocab is built from the training data
     # If a word is missing from the training data, it will be replaced with <unk>
-    train, valid, test, vocab_size = data_read()
-    params.vocab_size = vocab_size
-    train_batchwise_x_y_pairs = batchify(train, params.batch_size, params.seq_length)
-    valid_batchwise_x_y_pairs = batchify(valid, params.batch_size, params.seq_length)
-    test_batchwise_x_y_pairs = batchify(test, params.batch_size, params.seq_length)
-    lstm_model = LSTM_Model(params)
+    train_data, valid_data, test_data = load_data()
+    vocab = build_vocab(train_data)
+    train_loader, valid_loader, test_loader = create_data_loaders(train_data, valid_data, test_data, params.batch_size, vocab)
+
+    lstm_model = LSTM_Model(params, len(vocab))
     lstm_model.to(device)
-    lstm_model = train_model(lstm_model,train_batchwise_x_y_pairs, valid_batchwise_x_y_pairs, test_batchwise_x_y_pairs, params)
+    lstm_model = train_model(lstm_model,train_loader, valid_loader, test_loader, params)
     
     #TODO add perplexity calculation
     #TODO add tensorboard
